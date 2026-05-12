@@ -1,0 +1,57 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── 가상환경 ───
+venv/
+env/
+.venv/
+ENV/
+
+# ─── 환경 변수 / 비밀 ───
+.env
+.env.*
+*.key
+*.pem
+secrets/
+credentials.json
+
+# ─── Claude Code CLI 로컬 상태 ───
+.claude/
+.anthropic/
+
+# ─── 에디터 / IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ─── 로그 / 임시 ───
+*.log
+logs/
+*.tmp
+*.bak
+
+# ─── 운영 데이터 (수집된 응답이 있다면 절대 커밋 금지) ───
+data/
+responses/
+*.csv
+!sample_*.csv
+
+# ─── 빌드 산출물 ───
+*.pid
+*.sock
+
+# ─── 로컬 셋업 헬퍼 (저장소에 포함하지 않음) ───
+setup_repo.sh
