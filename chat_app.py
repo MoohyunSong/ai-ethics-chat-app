@@ -20,9 +20,14 @@ from flask import Flask, request, jsonify, send_from_directory
 import subprocess
 import json
 import os
+import sys
 
 app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 환경 변수로 모델/디버그 조정 가능
+CHATBOT_MODEL = os.environ.get("CHATBOT_MODEL", "sonnet")
+DEBUG = os.environ.get("CHATBOT_DEBUG", "").lower() in ("1", "true", "yes")
 
 # =========================================================
 # 5개 페르소나 정의
@@ -60,17 +65,39 @@ PERSONAS = {
             "당신은 인지 행동 치료(CBT)의 원리를 적용하는 대화 상대입니다. "
             "Beck과 Ellis의 인지 모델에 따라, 사용자의 자동 사고와 인지 왜곡을 "
             "부드럽게 식별하고 다른 관점을 함께 탐색합니다.\n\n"
-            "핵심 원칙:\n"
+            "## 핵심 원칙\n"
             "1. 먼저 감정을 인정합니다. 인지 작업은 사용자가 감정에 머무를 시간을 보장한 뒤에 시작합니다.\n"
             "2. 가르치려 들지 않고, 질문을 통해 사용자와 함께 생각합니다.\n"
-            "3. 인지 왜곡(이분법적 사고, 과잉 일반화, 파국화, 개인화 등)을 식별하지만, "
-            "   라벨링은 신중히 합니다.\n"
-            "4. '그 생각이 100% 사실이라는 증거는 무엇이고, 반대 증거는 무엇일까요?' 같은 "
-            "   소크라테스적 질문을 사용합니다.\n\n"
-            "응답 스타일:\n"
+            "3. 라벨링은 신중히 합니다. 사용자에게 '이건 ◯◯◯ 사고예요'라고 직접 명명하지 마세요.\n"
+            "4. 대신, 발견한 왜곡 유형에 따라 아래의 권장 응답 패턴을 사용합니다.\n\n"
+            "## 우선 처리하는 4가지 인지 왜곡과 응답 패턴\n\n"
+            "**(1) 이분법적 사고 (All-or-Nothing Thinking)**\n"
+            "  - 단서 발화: '전부 망했어요', '하나도 안 돼요', '절대 못 해요', '아무도 날 좋아하지 않아요'\n"
+            "  - 권장 응답: 양극단 사이의 회색 지대를 묻는 질문. "
+            "    예) '0과 100 사이에서 굳이 점수를 매긴다면 어디쯤 있을까요?', "
+            "        '완전히 그렇지 않았던 순간이 단 한 번이라도 있었을까요?'\n\n"
+            "**(2) 과잉 일반화 (Overgeneralization)**\n"
+            "  - 단서 발화: '항상', '늘', '매번', '나는 원래 그래요', '평생 이래요'\n"
+            "  - 권장 응답: 특정 사례로 좁히는 질문. "
+            "    예) '오늘의 그 일에 한정해서 다시 본다면 어떻게 느껴지세요?', "
+            "        '예외였던 한 번을 떠올려 볼 수 있을까요?'\n\n"
+            "**(3) 파국화 (Catastrophizing)**\n"
+            "  - 단서 발화: '이러다 끝나요', '다 잃을 거예요', '돌이킬 수 없어요', '최악이에요'\n"
+            "  - 권장 응답: 최악·최선·가장 그럴듯한 시나리오를 분리해 묻기. "
+            "    예) '가장 일어날 가능성이 높다고 보는 결과는 무엇일까요?', "
+            "        '만약 그 일이 정말 일어난다면, 그다음 한 걸음으로 할 수 있는 일이 있을까요?'\n\n"
+            "**(4) 개인화 (Personalization)**\n"
+            "  - 단서 발화: '다 내 탓이에요', '내가 잘못해서 그래요', '제가 망쳤어요'\n"
+            "  - 권장 응답: 책임의 다요인성을 묻기. "
+            "    예) '이 일에 영향을 줬을 수 있는 다른 요인을 함께 적어 볼까요?', "
+            "        '같은 상황의 친구가 같은 말을 한다면 뭐라고 말해 주고 싶으세요?'\n\n"
+            "위 4가지 외의 왜곡(정신적 여과, 감정적 추론, 당위적 진술 등)도 인식되지만, "
+            "본 챗봇은 우선 위 4가지에 집중합니다.\n\n"
+            "## 응답 스타일\n"
             "- 3~4문장 정도.\n"
-            "- 부드러운 직면을 사용하되, 사용자의 자율성을 존중합니다.\n"
+            "- 항상 *감정 인정 → 부드러운 질문* 순서를 지킵니다(감정을 건너뛰고 곧장 질문하지 않습니다).\n"
             "- 사용자의 명제에 무조건 동의하지 않습니다(예: '나는 가치 없다'에 동조하지 않음).\n"
+            "- 한 번에 하나의 왜곡만 다룹니다. 여러 왜곡이 보여도 가장 강하게 드러난 것 하나를 선택.\n"
             "- 자해·자살 단서가 보이면 즉시 '위기 연계'로 전환해야 한다고 알리고, 1393을 안내합니다."
         ),
     },
@@ -149,6 +176,27 @@ PERSONAS = {
 }
 
 
+def build_prompt(message: str, persona: dict, history: list) -> str:
+    """대화 히스토리를 Claude에 보낼 단일 프롬프트로 직렬화.
+
+    Claude는 chat 모델이므로 어색한 transcript-style 프롬프트보다
+    명확한 컨텍스트 블록 + 새 발화 구조가 더 안전하다.
+    """
+    if not history:
+        return message
+
+    lines = ["[지금까지의 대화]"]
+    for turn in history[-10:]:  # 최근 10턴만
+        role = "사용자" if turn["role"] == "user" else "당신"
+        lines.append(f"  {role}: {turn['content']}")
+    lines.append("")
+    lines.append("[사용자의 새 발화]")
+    lines.append(message)
+    lines.append("")
+    lines.append("위 맥락에 이어 한 번만 응답해 주세요. 역할 라벨(\"사용자:\", \"당신:\" 등)은 출력하지 마세요.")
+    return "\n".join(lines)
+
+
 def call_claude(message: str, persona_key: str, history: list) -> str:
     """Claude Code CLI를 서브프로세스로 호출."""
     if persona_key not in PERSONAS:
@@ -156,35 +204,89 @@ def call_claude(message: str, persona_key: str, history: list) -> str:
 
     persona = PERSONAS[persona_key]
     system_prompt = persona["system_prompt"]
+    prompt = build_prompt(message, persona, history)
 
-    # 대화 히스토리를 텍스트로 직렬화
-    conversation = ""
-    for turn in history[-10:]:  # 최근 10턴만 포함
-        role = "사용자" if turn["role"] == "user" else f"챗봇({persona['name']})"
-        conversation += f"{role}: {turn['content']}\n\n"
-    conversation += f"사용자: {message}\n\n챗봇({persona['name']}):"
+    cmd = [
+        "claude", "--print",
+        "--append-system-prompt", system_prompt,
+        "--model", CHATBOT_MODEL,
+    ]
+
+    if DEBUG:
+        print(f"\n[DEBUG] cmd = {cmd}", file=sys.stderr)
+        print(f"[DEBUG] prompt ({len(prompt)} chars):\n{prompt}\n", file=sys.stderr)
 
     try:
+        # 긴 한글 텍스트는 argv보다 stdin이 안전하다.
         result = subprocess.run(
-            [
-                "claude", "-p", conversation,
-                "--append-system-prompt", system_prompt,
-                "--model", "sonnet",
-            ],
-            capture_output=True, text=True, timeout=60,
+            cmd,
+            input=prompt,
+            capture_output=True, text=True, timeout=90,
         )
-        if result.returncode != 0:
-            return f"⚠️ Claude CLI 오류: {result.stderr.strip() or '응답 실패'}"
-        return result.stdout.strip() or "(빈 응답)"
     except subprocess.TimeoutExpired:
         return "⚠️ 응답이 너무 오래 걸려 중단했어요. 다시 시도해 주세요."
     except FileNotFoundError:
         return (
             "⚠️ `claude` 명령을 찾을 수 없어요. "
-            "Claude Code CLI가 설치되어 있고 PATH에 있는지 확인해 주세요."
+            "Claude Code CLI가 설치되어 있고 PATH에 있는지 확인해 주세요. "
+            "(설치 후 `which claude` 로 확인)"
         )
     except Exception as exc:
-        return f"⚠️ 오류: {exc}"
+        return f"⚠️ 예외: {type(exc).__name__}: {exc}"
+
+    if DEBUG:
+        print(f"[DEBUG] exit = {result.returncode}", file=sys.stderr)
+        print(f"[DEBUG] stdout ({len(result.stdout)} chars): {result.stdout[:500]!r}", file=sys.stderr)
+        print(f"[DEBUG] stderr: {result.stderr[:500]!r}\n", file=sys.stderr)
+
+    if result.returncode != 0:
+        # 에러는 stderr·stdout·exit code 모두 보여 줘서 진단이 쉽도록
+        parts = []
+        if result.stderr.strip():
+            parts.append(f"stderr: {result.stderr.strip()[:300]}")
+        if result.stdout.strip():
+            parts.append(f"stdout: {result.stdout.strip()[:300]}")
+        parts.append(f"exit={result.returncode}")
+        return "⚠️ Claude CLI 오류 — " + " | ".join(parts)
+
+    response = result.stdout.strip()
+
+    # 혹시 Claude가 "당신:" 또는 "챗봇(...)": prefix를 포함했다면 떼어낸다
+    for prefix in (f"챗봇({persona['name']}):", "당신:", "챗봇:", "Assistant:", "assistant:"):
+        if response.startswith(prefix):
+            response = response[len(prefix):].lstrip()
+            break
+
+    if not response:
+        return f"⚠️ Claude가 빈 응답을 반환했어요 (stderr: {result.stderr.strip() or '없음'})"
+    return response
+
+
+def diagnose_claude_cli():
+    """앱 시작 시 Claude CLI 가용성을 점검."""
+    print("─" * 60)
+    try:
+        r = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            print(f"  ✓ Claude CLI: {r.stdout.strip()}")
+        else:
+            print(f"  ⚠ Claude --version 비정상 종료 (exit={r.returncode})")
+            if r.stderr.strip():
+                print(f"     stderr: {r.stderr.strip()[:200]}")
+    except FileNotFoundError:
+        print("  ✗ 'claude' 명령을 찾을 수 없습니다.")
+        print("     설치 가이드: https://claude.com/code")
+        return False
+    except Exception as e:
+        print(f"  ✗ 점검 실패: {e}")
+        return False
+    print(f"  ✓ 사용 모델: {CHATBOT_MODEL}  (CHATBOT_MODEL 환경변수로 변경 가능)")
+    print(f"  ✓ DEBUG 모드: {'ON' if DEBUG else 'OFF'}  (CHATBOT_DEBUG=1 로 활성화)")
+    print("─" * 60)
+    return True
 
 
 # =========================================================
@@ -227,6 +329,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  다중 페르소나 상담 챗봇 데모")
     print("=" * 60)
+    diagnose_claude_cli()
     print(f"  접속: http://localhost:5050")
     print(f"  종료: Ctrl+C")
     print("=" * 60 + "\n")
